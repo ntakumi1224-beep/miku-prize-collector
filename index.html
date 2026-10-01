@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="ja" data-theme="light" data-accent="miku">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#27b9b1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Miku Prize Collector">
+<meta name="description" content="初音ミクのプライズフィギュアを集める・知る・確認するための非公式コレクション支援Webアプリ">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="./icons/icon-180.png">
+<title>Miku Prize Collector</title>
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<div class="app">
+  <div class="top">
+    <div class="brand">Miku Prize Collector <span style="font-size:11px;color:#999">Version 1.0</span></div>
+    <div class="sub">Miku Prize Collector · 非公式コレクション支援ツール · 339件収録</div>
+  </div>
+
+  <main>
+    <section id="home" class="screen active">
+      <div class="hero">
+        <div style="font-size:13px;color:#666">あなたのコレクション</div>
+        <div style="font-size:26px;font-weight:850;margin-top:3px"><span id="homeOwned">0</span> / 339 体</div>
+        <div class="kpis">
+          <div class="kpi" role="button" tabindex="0" onclick="openStateList('owned')" style="cursor:pointer"><b id="kOwned">0</b><span>所持</span></div>
+          <div class="kpi" role="button" tabindex="0" onclick="openStateList('missing')" style="cursor:pointer"><b id="kMissing">339</b><span>未所持</span></div>
+          <div class="kpi" role="button" tabindex="0" onclick="openStateList('want')" style="cursor:pointer"><b id="kWant">0</b><span>欲しい</span></div>
+        </div>
+      </div>
+      <div class="quick">
+        <button type="button" class="qbtn" onclick="go('identify')">📷 カメラで検索<small>写真から商品を探す</small></button>
+        <button type="button" class="qbtn" onclick="go('settings')">⚙ 設定<small>表示・データ・アプリ設定</small></button>
+        <button type="button" class="qbtn" onclick="go('collection')">📚 全商品一覧<small>メーカー・年代で絞る</small></button>
+        <button type="button" class="qbtn" onclick="go('history')">🕘 閲覧履歴<small>最近見た商品を確認</small></button>
+      </div>
+    </section>
+
+    <section id="collection" class="screen">
+      <div class="controls">
+        <input id="search" class="search" placeholder="商品名・シリーズ・衣装・IDで検索">
+        <select id="maker"><option value="">全メーカー</option></select>
+        <select id="sort">
+          <option value="old">古い順</option><option value="new">新しい順</option>
+          <option value="name">商品名順</option><option id="sortAddedOption" value="added" hidden>追加順</option>
+        </select>
+      </div>
+      <div id="sortOwnedHint" class="sortOwnedHint">「追加順」は所持品を登録した順に並べます。</div>
+      <div class="chips" id="stateChips">
+        <button class="chip active" data-state="all">すべて</button>
+        <button type="button" class="chip" data-state="owned">所持のみ</button>
+        <button type="button" class="chip" data-state="missing">未所持のみ</button>
+        <button type="button" class="chip" data-state="want">欲しいのみ</button>
+      </div>
+      <div class="chips" id="formChips"></div>
+      <div class="countline"><span id="resultCount"></span></div>
+      <div id="list" class="list"></div>
+    </section>
+
+    <section id="identify" class="screen">
+      <div class="sectionTitle">カメラで商品検索</div>
+      <div class="identifyBox">
+        <div style="font-size:42px">📸</div>
+        <div style="font-weight:800;margin-top:8px">フィギュアを撮影・選択</div>
+        <div class="notice">プロトタイプでは写真プレビューまで実装。次段階でChatGPTカメラ検索と339件マスターを接続します。</div>
+        <input id="photo" type="file" accept="image/*" capture="environment" style="margin-top:14px;max-width:100%">
+        <img id="preview" class="preview">
+        <button type="button" class="cameraSearchBtn" onclick="demoIdentify()">この写真から検索</button>
+      </div>
+      <div id="identifyResult" style="margin-top:12px"></div>
+    </section>
+
+    <section id="history" class="screen">
+      <div class="historyHead">
+        <div class="sectionTitle" style="margin:0">閲覧履歴</div>
+        <button type="button" class="historyClear" onclick="clearHistory()">履歴をすべて削除</button>
+      </div>
+      <div class="notice" style="margin-bottom:10px">最近開いた商品を新しい順に表示します。</div>
+      <div id="historyList" class="historyList"></div>
+    </section>
+
+    
+
+<section id="settings" class="screen">
+  <div class="sectionTitle">設定</div>
+
+  <div class="setting">
+    <div style="font-weight:800;margin-bottom:4px">表示設定</div>
+    <div class="notice">見た目や表示言語を好みに合わせて変更できます。</div>
+
+    <div class="settingBlock">
+      <div class="settingLabel">テーマ</div>
+      <select id="themeSetting">
+        <option value="light">ホワイト</option>
+        <option value="dark">ダーク（ブラック）</option>
+      </select>
+    </div>
+
+    <div class="settingBlock">
+      <div class="settingLabel">言語</div>
+      <select id="languageSetting">
+        <option value="ja">日本語</option>
+        <option value="en">English</option>
+        <option value="zh">中文</option>
+      </select>
+      <div class="notice" style="margin-top:6px">Version 1.0ではUI主要部分のみ切替対象です。</div>
+    </div>
+
+    <div class="settingBlock">
+      <div class="settingLabel">メインカラー</div>
+      <div class="colorChoices">
+        <button type="button" class="colorChoice miku" data-accent-choice="miku" title="ミクカラー"></button>
+        <button type="button" class="colorChoice hotpink" data-accent-choice="hotpink" title="ピンク"></button>
+        <button type="button" class="colorChoice sakura" data-accent-choice="sakura" title="桜ミク"></button>
+        <button type="button" class="colorChoice snow" data-accent-choice="snow" title="雪ミク"></button>
+      </div>
+      <div id="accentLabel" class="notice" style="margin-top:8px"></div>
+    </div>
+  </div>
+
+  <div class="setting">
+    <div class="row">
+      <div>
+        <b>収録商品</b>
+        <div class="notice">2026 verified Master</div>
+        <div class="updateMeta">データベース更新：2026/10/1<br>Miku Prize Collector Version 1.0.0</div>
+      </div>
+      <b>339件</b>
+    </div>
+  </div>
+
+  <div class="setting">
+    <b>所持データ</b>
+    <div class="notice">この端末のブラウザ内に、所持・個数・ほしい・閲覧履歴・表示設定を保存します。</div>
+    <div class="actions">
+      <button type="button" class="btn" onclick="exportState()">データを書き出す</button>
+      <button type="button" class="btn" onclick="resetState()">所持状態をリセット</button>
+    </div>
+  </div>
+
+  <div class="setting">
+    <b>Miku Prize Collectorについて</b>
+    <div class="notice">一覧はカタログではなく図鑑。販売者と収集家をつなぐことを目的とせず、収集家の記憶と確認を支援するための非公式ツールです。</div>
+  </div>
+</section>
+
+
+  </main>
+</div>
+
+<div class="nav">
+  <div class="navin">
+    <button class="active" data-go="home" onclick="go('home')"><span class="ico">⌂</span>ホーム</button>
+    <button type="button" data-go="collection" onclick="go('collection')"><span class="ico">▦</span>一覧</button>
+    <button type="button" data-go="identify" onclick="go('identify')"><span class="ico">📷</span>カメラ</button>
+    <button type="button" data-go="history" onclick="go('history')"><span class="ico">🕘</span>履歴</button>
+    <button type="button" data-go="settings" onclick="go('settings')"><span class="ico">⚙</span>設定</button>
+  </div>
+</div>
+
+<div id="sheet" class="sheet" onclick="closeSheet(event)">
+  <div class="panel" onclick="event.stopPropagation()">
+    <div class="handle"></div>
+    <div id="detail"></div>
+  </div>
+</div>
+
+<script src="./app.js" defer></script>
+</body>
+</html>
