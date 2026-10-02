@@ -107,7 +107,9 @@ export function createHandler(fetchUpstream = fetch) {
       const limiter = env.RATE_LIMITER.get(env.RATE_LIMITER.idFromName('identify'));
       const admission = await limiter.fetch('https://limiter/admit', {method:'POST', body:JSON.stringify({key:hash, dailyLimit:Number(env.MAX_REQUESTS_PER_DAY) || 5})});
       if(admission.status !== 200) return json({error:'検索回数の上限に達しました。時間を置いて再試行してください。'}, 429, origin);
-      const ai = await fetchUpstream('https://api.openai.com/v1/chat/completions', {
+      let ai;
+      try {
+        ai = await fetchUpstream('https://api.openai.com/v1/chat/completions', {
         method:'POST', headers:{'Content-Type':'application/json', 'Authorization':`Bearer ${env.OPENAI_API_KEY}`},
         signal:AbortSignal.timeout(45000),
         body:JSON.stringify({
@@ -119,11 +121,28 @@ export function createHandler(fetchUpstream = fetch) {
           ]
         })
       });
-      if(!ai.ok) return json({error:'画像認識サービスを利用できませんでした。時間を置いて再試行してください。'}, 502, origin);
-      const output = await ai.json();
-      const candidateIds = validateCandidates(JSON.parse(output.choices?.[0]?.message?.content || 'null'));
+      } catch {
+        return json({error:'画像認識サービスとの通信に失敗しました。再試行してください。', code:'OPENAI_NETWORK_ERROR'}, 502, origin);
+      }
+      if(!ai.ok) return json({error:'画像認識サービスを利用できませんでした。時間を置いて再試行してください。', code:'OPENAI_HTTP_ERROR', upstreamStatus:ai.status}, 502, origin);
+      let output;
+      try { output = await ai.json(); } catch {
+        return json({error:'画像認識サービスの応答を読み取れませんでした。', code:'OPENAI_RESPONSE_PARSE_ERROR'}, 502, origin);
+      }
+      let candidates;
+      try {
+        const content = output?.choices?.[0]?.message?.content;
+        if(typeof content !== 'string') throw new Error();
+        candidates = JSON.parse(content);
+      } catch {
+        return json({error:'候補データを読み取れませんでした。', code:'CANDIDATE_PARSE_ERROR'}, 502, origin);
+      }
+      let candidateIds;
+      try { candidateIds = validateCandidates(candidates); } catch {
+        return json({error:'候補データの検証に失敗しました。', code:'CANDIDATE_VALIDATION_ERROR'}, 502, origin);
+      }
       return json({candidateIds, databaseUpdated:catalog.database_updated}, 200, origin);
-    } catch { return json({error:'検索に失敗しました。ネット接続を確認し、再試行してください。'}, 502, origin); }
+    } catch { return json({error:'検索処理に失敗しました。再試行してください。', code:'IDENTIFY_INTERNAL_ERROR'}, 502, origin); }
   };
 }
 export default {fetch:createHandler()};

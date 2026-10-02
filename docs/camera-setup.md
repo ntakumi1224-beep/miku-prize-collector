@@ -166,3 +166,22 @@ Durable Objectの名前 `identify` と既存の分間カウンターも維持し
 旧仕様の全体合計カウンターをIP別に分配することはできないため、変更後の初回は
 新しいIP別日次カウンターから開始します。既存ストレージを削除・作り直す変更はありません。
 制限対象はTurnstile検証に成功して認識へ進んだ試行です。認識失敗も回数に含まれます。
+
+## OpenAI呼び出しの安全な診断
+
+`identify` がHTTP 502になった場合、Responseの `code` で失敗した段階を確認します。
+HTTPエラー時に限り `upstreamStatus`（数値）を追加します。
+APIキー・Secret・トークン・OpenAIの応答本文・例外メッセージは返しません。
+
+| code | 失敗した段階 |
+|---|---|
+| `OPENAI_NETWORK_ERROR` | OpenAIへのfetchが失敗、またはタイムアウト |
+| `OPENAI_HTTP_ERROR` | OpenAIが非2xxを返した。`upstreamStatus`だけを確認可能 |
+| `OPENAI_RESPONSE_PARSE_ERROR` | OpenAIのHTTP応答をJSONとして解析できない |
+| `CANDIDATE_PARSE_ERROR` | `message.content`が文字列でない／欠落／JSONとして解析できない |
+| `CANDIDATE_VALIDATION_ERROR` | JSONは解析できたが候補ID・件数・重複などの検証に失敗 |
+| `IDENTIFY_INTERNAL_ERROR` | 上記以外のWorker内部処理で例外が発生 |
+
+この診断は原因の切り分け用であり、実際のOpenAI接続成功を意味しません。
+更新したWorkerをデプロイ後、新しい写真検索のResponseを確認してください。
+フロントエンドの再公開やmainへのマージは不要です。

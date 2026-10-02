@@ -128,3 +128,43 @@ test('non-2xx success and unexpected error-codes are never trusted',async()=>{
  const result=await verifyTurnstile(async()=>res({success:true,hostname:env.TURNSTILE_HOSTNAME,action:'identify','error-codes':['private-message']},400),env,'token-only');
  assert.equal(result.status,403);assert.deepEqual(result.body.verificationErrors,[]);
 });
+
+
+const privateText = 'sensitive-provider-body-secret-token';
+function aiHandler(reply) {
+ return createHandler(async(url)=>{
+  if(url.includes('siteverify')) return res({success:true,hostname:env.TURNSTILE_HOSTNAME,action:'identify'});
+  return reply();
+ });
+}
+const diagnosticCases = [
+ ['network',()=>{throw new Error(privateText);},'OPENAI_NETWORK_ERROR'],
+ ['timeout',()=>{throw new DOMException(privateText,'TimeoutError');},'OPENAI_NETWORK_ERROR'],
+ ['HTTP',()=>new Response(privateText,{status:401}),'OPENAI_HTTP_ERROR',401],
+ ['response JSON',()=>new Response(privateText),'OPENAI_RESPONSE_PARSE_ERROR'],
+ ['content JSON',()=>res({choices:[{message:{content:privateText}}]}),'CANDIDATE_PARSE_ERROR'],
+ ['missing content',()=>res({choices:[]}), 'CANDIDATE_PARSE_ERROR'],
+ ['null envelope',()=>res(null), 'CANDIDATE_PARSE_ERROR'],
+ ['invalid IDs',()=>res({choices:[{message:{content:JSON.stringify({candidateIds:['invented',...ids.slice(0,2)]})}}]}),'CANDIDATE_VALIDATION_ERROR'],
+ ['duplicate IDs',()=>res({choices:[{message:{content:JSON.stringify({candidateIds:[ids[0],ids[0],ids[1]]})}}]}),'CANDIDATE_VALIDATION_ERROR'],
+ ['null candidates',()=>res({choices:[{message:{content:'null'}}]}),'CANDIDATE_VALIDATION_ERROR']
+];
+for(const [label,reply,code,upstreamStatus] of diagnosticCases) {
+ test('safe diagnostic for '+label,async()=>{
+  const r=await aiHandler(reply)(req(),env);assert.equal(r.status,502);
+  assert.equal(r.headers.get('Cache-Control'),'no-store');assert.equal(r.headers.get('Access-Control-Allow-Origin'),env.ALLOWED_ORIGIN);
+  const data=await r.json();assert.equal(data.code,code);
+  assert.deepEqual(Object.keys(data).sort(),upstreamStatus ? ['code','error','upstreamStatus'] : ['code','error']);
+  if(upstreamStatus) assert.equal(data.upstreamStatus,upstreamStatus);
+  assert.doesNotMatch(JSON.stringify(data),/sensitive-provider-body|test-only|test-token|stack|Authorization/);
+ });
+}
+test('HTTP error body is never read',async()=>{
+ const r=await aiHandler(()=>({ok:false,status:429,json:()=>assert.fail('body must not be parsed'),text:()=>assert.fail('body must not be read')}))(req(),env);
+ assert.equal((await r.json()).code,'OPENAI_HTTP_ERROR');
+});
+test('unexpected pre-OpenAI failure has its own code, not a provider error',async()=>{
+ const e={...env,RATE_LIMITER:{idFromName:()=>{throw new Error(privateText);}}};
+ const r=await createHandler(upstream())(req(),e);
+ const data=await r.json();assert.equal(data.code,'IDENTIFY_INTERNAL_ERROR');assert.doesNotMatch(JSON.stringify(data),/sensitive-provider-body/);
+});
