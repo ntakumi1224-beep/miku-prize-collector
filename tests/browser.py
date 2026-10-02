@@ -38,11 +38,13 @@ async def main():
    if route.request.method=='OPTIONS':
     await route.fulfill(status=204,headers={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'POST','Access-Control-Allow-Headers':'Content-Type'});return
    if route.request.url.endswith('/confirm'):
-    assert await page.locator('.candidate').count() in [3,5]
+    assert await page.locator('.candidate').count() in range(1,6)
     confirmations.append(route.request.post_data)
     await route.fulfill(status=200,content_type='application/json',headers={'Access-Control-Allow-Origin':'*'},body='{"confirmed":true}');return
    sent.append(route.request.post_data_buffer)
    data={'candidateIds':IDS,'databaseUpdated':CATALOG['database_updated'],'receipt':'11111111-1111-4111-8111-111111111111'};status=200
+   if mode['value']=='one':data['candidateIds']=IDS[:1]
+   if mode['value']=='two':data['candidateIds']=IDS[:2]
    if mode['value']=='five':data['candidateIds']=[x['id'] for x in CATALOG['items'][:5]]
    if mode['value']=='empty':data['candidateIds']=[]
    if mode['value']=='invalid':data['candidateIds']=['invented',*IDS[:2]]
@@ -77,6 +79,13 @@ async def main():
   await page.wait_for_function('document.querySelectorAll(".candidate").length===5')
   await page.wait_for_function('document.getElementById("identifyStatus").textContent.includes("検索が完了")')
   assert len(confirmations)==3
+  for size,label in [(1,'one'),(2,'two')]:
+   mode['value']=label;await page.locator('#identifyButton').click()
+   await page.wait_for_function('(n)=>document.querySelectorAll(".candidate").length===n',arg=size)
+   await page.wait_for_function('document.getElementById("identifyStatus").textContent.includes("検索が完了")')
+   await page.locator('.candidate').first.click();assert await page.locator('#sheet').get_attribute('class')=='sheet open'
+   await page.evaluate('closeSheet()')
+  assert len(confirmations)==5
   # Existing external search links and collection filters.
   await page.evaluate('() => {window.externalLinks=[];window.open=(url)=>{externalLinks.push(url);return {}};}')
   await page.evaluate('quickExternal("初音ミク", "images");quickExternal("初音ミク", "mercari");quickExternal("初音ミク", "google")')

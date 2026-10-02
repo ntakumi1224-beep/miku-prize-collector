@@ -12,13 +12,14 @@ const res=(body,status=200)=>new Response(JSON.stringify(body),{status});
 function upstream({challenge={success:true,hostname:env.TURNSTILE_HOSTNAME,action:'identify'},candidates=ids,status=200,inspect=()=>{}}={}){
  return async(url,options)=>{if(url.includes('siteverify'))return res(challenge);inspect(JSON.parse(options.body));return res({choices:[{message:{content:JSON.stringify({candidateIds:candidates})}}]},status);};
 }
-test('339 unique products, 3–5 IDs or abstention; invalid IDs/duplicates/count rejected',()=>{
+test('339 unique products, 1–5 IDs or abstention; invalid IDs/duplicates/count rejected',()=>{
  assert.equal(catalog.items.length,339);assert.equal(new Set(catalog.items.map(x=>x.id)).size,339);
+ for(let count=0;count<=5;count++) assert.equal(validateCandidates({candidateIds:catalog.items.slice(0,count).map(x=>x.id)}).length,count);
  assert.deepEqual(validateCandidates({candidateIds:ids}),ids);assert.equal(validateCandidates({candidateIds:catalog.items.slice(0,5).map(x=>x.id)}).length,5);assert.deepEqual(validateCandidates({candidateIds:[]}),[]);
- for(const candidateIds of [[ids[0]],[ids[0],ids[0],ids[1]],['invented',...ids],Array(6).fill(ids[0]),'bad'])assert.throws(()=>validateCandidates({candidateIds}));
+ for(const candidateIds of [[ids[0],ids[0],ids[1]],['invented',...ids],catalog.items.slice(0,6).map(x=>x.id),'bad'])assert.throws(()=>validateCandidates({candidateIds}));
 });
 test('real request builds image/catalog payload and returns ranked IDs/version',async()=>{
- const r=await createHandler(upstream({inspect:body=>{assert.match(body.messages[0].content,/color variants/);assert.match(body.messages[0].content,/SEGA-001/);assert.match(body.messages[1].content[1].image_url.url,/^data:image\/jpeg;base64,/);assert.equal(body.response_format.json_schema.strict,true);}}))(req(),env);
+ const r=await createHandler(upstream({inspect:body=>{assert.match(body.messages[0].content,/Return 1 to 5 distinct existing IDs/);assert.match(body.messages[0].content,/color variants/);assert.match(body.messages[0].content,/SEGA-001/);assert.match(body.messages[1].content[1].image_url.url,/^data:image\/jpeg;base64,/);assert.equal(body.response_format.json_schema.strict,true);}}))(req(),env);
  assert.equal(r.status,200);assert.equal(r.headers.get('Access-Control-Allow-Origin'),env.ALLOWED_ORIGIN);assert.equal(r.headers.get('Cache-Control'),'no-store');assert.deepEqual(await r.json(),{candidateIds:ids,databaseUpdated:catalog.database_updated,receipt:'11111111-1111-4111-8111-111111111111'});
 });
 test('abstention stays empty',async()=>{assert.deepEqual((await (await createHandler(upstream({candidates:[]}))(req(),env)).json()).candidateIds,[]);});
@@ -235,4 +236,15 @@ test('HTTP validation failure returns only bounded requested diagnostics',async(
  const data=await r.json();assert.equal(r.status,502);
  assert.deepEqual(data.diagnostics,{count:3,hasDuplicates:true,hasUnknownIds:true,invalidIds:['SEGA-9999']});
  assert.doesNotMatch(JSON.stringify(data),/private-body/);
+});
+
+test('one valid candidate succeeds and charges only after display confirmation',async()=>{
+ const f=limiterFixture(), e={...env,MAX_REQUESTS_PER_DAY:'30',RATE_LIMITER:{idFromName:x=>x,get:()=>({fetch:(url,options)=>f.limiter.fetch(new Request(url,options))})}};
+ const handler=createHandler(upstream({candidates:[ids[0]]}));
+ const response=await handler(req(),e);assert.equal(response.status,200);
+ const data=await response.json();assert.deepEqual(data.candidateIds,[ids[0]]);
+ assert.equal([...f.data.values()].filter(v=>v?.pending)[0].used,0);
+ const confirmation=new Request('https://worker.example/api/identify/confirm',{method:'POST',headers:{Origin:env.ALLOWED_ORIGIN,'CF-Connecting-IP':'192.0.2.1','Content-Type':'application/json'},body:JSON.stringify({receipt:data.receipt})});
+ assert.equal((await handler(confirmation,e)).status,200);
+ assert.equal([...f.data.values()].filter(v=>v?.pending)[0].used,1);
 });

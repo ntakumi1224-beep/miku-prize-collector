@@ -65,7 +65,7 @@
   document.getElementById('cameraPhoto').addEventListener('change', selectPhoto);
   document.getElementById('libraryPhoto').addEventListener('change', selectPhoto);
   function renderCandidates(ids) {
-    if(!Array.isArray(ids) || (ids.length !== 0 && (ids.length < 3 || ids.length > 5)) || new Set(ids).size !== ids.length) throw new Error('候補データが不正です。再試行してください。');
+    if(!Array.isArray(ids) || ids.length > 5 || new Set(ids).size !== ids.length) throw new Error('候補データが不正です。再試行してください。');
     const candidates = ids.map(id => ITEMS.find(item => item.id === id));
     if(candidates.some(item => !item)) throw new Error('商品データの更新が必要です。オンラインで再読み込みしてください。');
     list.replaceChildren(); results.hidden = false;
