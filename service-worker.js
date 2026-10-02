@@ -1,5 +1,5 @@
 const CACHE_PREFIX = `miku-prize-collector:${self.registration.scope}:`;
-const CACHE_NAME = `${CACHE_PREFIX}v1.1.1`;
+const CACHE_NAME = `${CACHE_PREFIX}v1.1.2`;
 const CORE = [
   './', './index.html', './styles.css', './app.js', './products.json',
   './manifest.webmanifest', './config.js', './identify.js', './icons/icon-180.png', './icons/icon-192.png',

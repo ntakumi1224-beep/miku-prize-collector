@@ -1,7 +1,7 @@
 """Run with Python Playwright + Chromium; starts an isolated static server.
 External API/Turnstile are mocked: this does not validate recognition accuracy.
 """
-import asyncio, functools, http.server, json, os, threading
+import asyncio, functools, http.server, json, os, re, threading
 from pathlib import Path
 from playwright.async_api import async_playwright
 ROOT=Path(__file__).resolve().parents[1]
@@ -12,10 +12,15 @@ threading.Thread(target=server.serve_forever,daemon=True).start()
 BASE=f'http://127.0.0.1:{server.server_port}/{ROOT.name}/'
 CATALOG=json.loads((ROOT/'products.json').read_text())
 IDS=[x['id'] for x in CATALOG['items'][:3]]
+PUBLIC_CONFIG=(ROOT/'config.js').read_text()
+SITE_KEY=re.search(r"turnstileSiteKey: '([^']+)'",PUBLIC_CONFIG).group(1)
+API_URL=re.search(r"identifyApiUrl: '([^']+)'",PUBLIC_CONFIG).group(1)
 async def main():
  async with async_playwright() as p:
   browser=await p.chromium.launch(executable_path=os.environ.get('CHROMIUM_PATH','/usr/bin/chromium'),args=['--no-sandbox'])
-  context=await browser.new_context(); page=await context.new_page(); errors=[]
+  context=await browser.new_context()
+  await context.route('**/config.js',lambda route:route.fulfill(content_type='application/javascript',body="window.MPC_CONFIG={identifyApiUrl:'',turnstileSiteKey:''};"))
+  page=await context.new_page(); errors=[]
   page.on('pageerror',lambda e:errors.append(str(e)))
   await page.goto(BASE);await page.wait_for_function('ITEMS.length===339')
   await page.locator('.nav [data-go="identify"]').click()
@@ -25,8 +30,8 @@ async def main():
   assert '設定待ち' in await page.locator('#identifyStatus').inner_text()
   await context.close()
   context=await browser.new_context()
-  await context.route('**/config.js',lambda route:route.fulfill(content_type='application/javascript',body="window.MPC_CONFIG={identifyApiUrl:'https://api.example/api/identify',turnstileSiteKey:'public-test'};"))
-  challenge="""window.turnstile={render:(selector,options)=>{window.testChallenge=()=>options.callback('test-token');window.testChallenge();return 1},reset:()=>window.testChallenge()};window.mpcTurnstileReady();"""
+  await context.route('**/config.js',lambda route:route.fulfill(content_type='application/javascript',body=PUBLIC_CONFIG))
+  challenge="""window.turnstile={render:(selector,options)=>{window.testSiteKey=options.sitekey;window.testChallenge=()=>options.callback('test-token');window.testChallenge();return 1},reset:()=>window.testChallenge()};window.mpcTurnstileReady();"""
   await context.route('https://challenges.cloudflare.com/**',lambda route:route.fulfill(content_type='application/javascript',body=challenge))
   mode={'value':'ok'}; sent=[]
   async def api(route):
@@ -40,7 +45,7 @@ async def main():
    if mode['value']=='limit':status=429;data={'error':'検索回数の上限に達しました。'}
    if mode['value']=='network':await route.abort();return
    await route.fulfill(status=status,content_type='application/json',headers={'Access-Control-Allow-Origin':'*'},body=json.dumps(data))
-  await context.route('https://api.example/**',api)
+  await context.route(API_URL,api)
   page=await context.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
   await page.goto(BASE);await page.wait_for_function('ITEMS.length===339')
   await page.evaluate('navigator.serviceWorker.ready');await page.wait_for_function('!!navigator.serviceWorker.controller')
@@ -48,6 +53,7 @@ async def main():
   for source in ['cameraPhoto','libraryPhoto']:
    await page.locator('#'+source).set_input_files(str(ROOT/'icons/icon-512.png'))
    await page.wait_for_function('!document.getElementById("identifyButton").disabled')
+   assert await page.evaluate('window.testSiteKey')==SITE_KEY
    await page.locator('#identifyButton').click();await page.wait_for_function('document.querySelectorAll(".candidate").length===3')
    assert await page.locator('.identifyWarning').inner_text()=='検索結果は参考候補です。よく見比べて確認してください。'
    card=await page.locator('.candidate').first.inner_text()
