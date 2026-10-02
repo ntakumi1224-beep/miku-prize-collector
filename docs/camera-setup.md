@@ -213,3 +213,22 @@ Workerは発行元IP・期限・候補検証済み状態を確認し、1回だ�
 表示の成否はブラウザからの通知を前提にします。サーバーだけでは実際の画面表示や
 改変クライアントの通知省略を証明できません。分間制限・Turnstileは独立して維持します。
 日次回数に含まれない失敗でも、OpenAI側で処理された場合はAPI料金が発生することがあります。
+
+### 候補検証エラーの診断項目
+
+`CANDIDATE_VALIDATION_ERROR` の場合のみ、次の `diagnostics` を追加します。
+
+```json
+{
+  "count": 3,
+  "hasDuplicates": true,
+  "hasUnknownIds": true,
+  "invalidIds": ["SEGA-9999"]
+}
+```
+
+`candidateIds` が配列でない場合は、件数と判定値が `null`、IDリストは空です。
+不正IDはASCII英数字・`._:-`からなる最大64文字のID形式の文字列だけを最大5件返します。
+任意の長文・オブジェクト・キー／Secret／トークンと一致する文字列は返しません。
+そのため `hasUnknownIds: true` でも、安全に返せるIDがなければ `invalidIds` は空です。
+生レスポンスや商品情報の全文は診断に含めません。

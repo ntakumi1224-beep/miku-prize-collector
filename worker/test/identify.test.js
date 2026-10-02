@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {createHandler,validateCandidates,RateLimiter,verifyTurnstile} from '../src/index.js';
+import {createHandler,validateCandidates,RateLimiter,verifyTurnstile,candidateDiagnostics} from '../src/index.js';
 import catalog from '../src/catalog.json' with {type:'json'};
 const ids=catalog.items.slice(0,3).map(x=>x.id);
 const env={ALLOWED_ORIGIN:'https://ntakumi1224-beep.github.io',TURNSTILE_HOSTNAME:'ntakumi1224-beep.github.io',OPENAI_API_KEY:'test-only',TURNSTILE_SECRET_KEY:'test-only',RATE_LIMITER:{idFromName:x=>x,get:()=>({fetch:async(url)=>res(new URL(url).pathname==='/admit'?{receipt:'11111111-1111-4111-8111-111111111111'}:{},200)})}};
@@ -170,7 +170,7 @@ for(const [label,reply,code,upstreamStatus] of diagnosticCases) {
   const r=await aiHandler(reply)(req(),env);assert.equal(r.status,502);
   assert.equal(r.headers.get('Cache-Control'),'no-store');assert.equal(r.headers.get('Access-Control-Allow-Origin'),env.ALLOWED_ORIGIN);
   const data=await r.json();assert.equal(data.code,code);
-  assert.deepEqual(Object.keys(data).sort(),upstreamStatus ? ['code','error','upstreamStatus'] : ['code','error']);
+  assert.deepEqual(Object.keys(data).sort(),upstreamStatus ? ['code','error','upstreamStatus'] : code==='CANDIDATE_VALIDATION_ERROR' ? ['code','diagnostics','error'] : ['code','error']);
   if(upstreamStatus) assert.equal(data.upstreamStatus,upstreamStatus);
   assert.doesNotMatch(JSON.stringify(data),/sensitive-provider-body|test-only|test-token|stack|Authorization/);
  });
@@ -217,4 +217,22 @@ test('development daily limit allows 30 successes then blocks 31st',async()=>{
  const f=limiterFixture();
  for(let i=0;i<30;i++){assert.equal((await success(f,'a',30)).status,200);f.advance(60000);}
  assert.equal((await f.admit('a',30)).status,429);
+});
+
+test('candidate diagnostics report count, duplicate and unknown strings',()=>{
+ assert.deepEqual(candidateDiagnostics({candidateIds:[ids[0],ids[0],'SEGA-9999']}),{count:3,hasDuplicates:true,hasUnknownIds:true,invalidIds:['SEGA-9999']});
+ assert.deepEqual(candidateDiagnostics({candidateIds:ids.slice(0,2)}),{count:2,hasDuplicates:false,hasUnknownIds:false,invalidIds:[]});
+ assert.deepEqual(candidateDiagnostics(null),{count:null,hasDuplicates:null,hasUnknownIds:null,invalidIds:[]});
+});
+test('candidate diagnostics never echo secrets, objects, free text or unbounded IDs',()=>{
+ const data={candidateIds:['SEGA-9999','sk-test-secret','test-only','test-token',{secret:'private-body'},'private body text','X'.repeat(1000),...Array.from({length:10},(_,i)=>'UNKNOWN-'+i)]};
+ const d=candidateDiagnostics(data,['test-only','test-token']);
+ assert.equal(d.count,data.candidateIds.length);assert.equal(d.hasUnknownIds,true);assert.equal(d.invalidIds.length,5);
+ assert.doesNotMatch(JSON.stringify(d),/sk-test-secret|test-only|test-token|private|X{65}/);
+});
+test('HTTP validation failure returns only bounded requested diagnostics',async()=>{
+ const r=await aiHandler(()=>res({choices:[{message:{content:JSON.stringify({candidateIds:[ids[0],ids[0],'SEGA-9999'],ignored:'private-body'})}}]}))(req(),env);
+ const data=await r.json();assert.equal(r.status,502);
+ assert.deepEqual(data.diagnostics,{count:3,hasDuplicates:true,hasUnknownIds:true,invalidIds:['SEGA-9999']});
+ assert.doesNotMatch(JSON.stringify(data),/private-body/);
 });

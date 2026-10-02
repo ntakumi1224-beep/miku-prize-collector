@@ -11,6 +11,20 @@ export function validateCandidates(data) {
   if(!Array.isArray(ids) || (ids.length !== 0 && (ids.length < 3 || ids.length > 5)) || new Set(ids).size !== ids.length || ids.some(id => !validIds.has(id))) throw new Error('Invalid model response');
   return ids;
 }
+// Report candidate structure only; do not echo arbitrary provider objects/text.
+export function candidateDiagnostics(data, secrets = []) {
+  const ids = data?.candidateIds;
+  if(!Array.isArray(ids)) return {count:null, hasDuplicates:null, hasUnknownIds:null, invalidIds:[]};
+  const unknown = ids.filter(id => !validIds.has(id));
+  const safeId = id => typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(id)
+    && !/^sk-|^Bearer/i.test(id) && !secrets.some(secret => secret && id.includes(secret));
+  return {
+    count:ids.length,
+    hasDuplicates:new Set(ids).size !== ids.length,
+    hasUnknownIds:unknown.length > 0,
+    invalidIds:[...new Set(unknown.filter(safeId))].slice(0,5)
+  };
+}
 function json(data, status, origin) {
   return new Response(JSON.stringify(data), {status, headers:{
     'Content-Type':'application/json; charset=utf-8', 'Cache-Control':'no-store',
@@ -158,7 +172,7 @@ export function createHandler(fetchUpstream = fetch) {
       }
       let candidateIds;
       try { candidateIds = validateCandidates(candidates); } catch {
-        return json({error:'候補データの検証に失敗しました。', code:'CANDIDATE_VALIDATION_ERROR'}, 502, origin);
+        return json({error:'候補データの検証に失敗しました。', code:'CANDIDATE_VALIDATION_ERROR', diagnostics:candidateDiagnostics(candidates,[env.OPENAI_API_KEY,env.TURNSTILE_SECRET_KEY,token])}, 502, origin);
       }
       if(!candidateIds.length) return json({candidateIds, databaseUpdated:catalog.database_updated},200,origin);
       const ready = await limiter.fetch('https://limiter/ready',{method:'POST',body:JSON.stringify(reservation)});
