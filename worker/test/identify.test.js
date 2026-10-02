@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {createHandler,validateCandidates,RateLimiter} from '../src/index.js';
+import {createHandler,validateCandidates,RateLimiter,verifyTurnstile} from '../src/index.js';
 import catalog from '../src/catalog.json' with {type:'json'};
 const ids=catalog.items.slice(0,3).map(x=>x.id);
 const env={ALLOWED_ORIGIN:'https://ntakumi1224-beep.github.io',TURNSTILE_HOSTNAME:'ntakumi1224-beep.github.io',OPENAI_API_KEY:'test-only',TURNSTILE_SECRET_KEY:'test-only',RATE_LIMITER:{idFromName:x=>x,get:()=>({fetch:async()=>new Response(null,{status:200})})}};
@@ -30,7 +30,7 @@ test('body size bounded without Content-Length',async()=>{const r=new Request('h
 test('Turnstile success, hostname and action all required',async()=>{for(const challenge of [{success:false},{success:true,hostname:'evil',action:'identify'},{success:true,hostname:env.TURNSTILE_HOSTNAME,action:'wrong'}])assert.equal((await createHandler(upstream({challenge}))(req(),env)).status,403);});
 test('rate limit prevents AI request',async()=>{const e={...env,RATE_LIMITER:{idFromName:x=>x,get:()=>({fetch:async()=>new Response(null,{status:429})})}};assert.equal((await createHandler(upstream({inspect:()=>assert.fail()}))(req(),e)).status,429);});
 test('model invalid IDs, provider failure and network error return safe errors',async()=>{
- for(const handler of [createHandler(upstream({candidates:[...ids.slice(0,2),'invented']})),createHandler(upstream({status:401})),createHandler(async()=>{throw new Error('private-details');})]){const r=await handler(req(),env);assert.equal(r.status,502);assert.doesNotMatch(await r.text(),/test-only|private-details/);}
+ for(const handler of [createHandler(upstream({candidates:[...ids.slice(0,2),'invented']})),createHandler(upstream({status:401})),createHandler(async(url)=>{if(url.includes('siteverify'))return res({success:true,hostname:env.TURNSTILE_HOSTNAME,action:'identify'});throw new Error('private-details');})]){const r=await handler(req(),env);assert.equal(r.status,502);assert.doesNotMatch(await r.text(),/test-only|private-details/);}
 });
 test('per-IP minute cap and global daily cap',async()=>{
  const data=new Map();let alarm=null;
@@ -38,4 +38,35 @@ test('per-IP minute cap and global daily cap',async()=>{
  const limiter=new RateLimiter({storage});const admit=(key)=>limiter.fetch(new Request('https://limiter/admit',{method:'POST',body:JSON.stringify({key,dailyLimit:5})}));
  for(let i=0;i<3;i++)assert.equal((await admit('a')).status,200);assert.equal((await admit('a')).status,429);
  for(let i=0;i<2;i++)assert.equal((await admit('b')).status,200);assert.equal((await admit('c')).status,429);assert.ok(alarm);
+});
+
+test('Siteverify sends explicit JSON with secret, token and IP',async()=>{
+ const result=await verifyTurnstile(async(url,options)=>{
+  assert.equal(url,'https://challenges.cloudflare.com/turnstile/v0/siteverify');
+  assert.equal(options.headers['Content-Type'],'application/json');
+  assert.deepEqual(JSON.parse(options.body),{secret:'test-only',response:'token-only',remoteip:'192.0.2.1'});
+  return res({success:true,hostname:env.TURNSTILE_HOSTNAME,action:'identify'});
+ },env,'token-only','192.0.2.1');assert.equal(result,null);
+});
+test('HTTP 400 secret errors are server configuration errors',async()=>{
+ for(const code of ['missing-input-secret','invalid-input-secret']) {
+  const result=await verifyTurnstile(async()=>res({success:false,'error-codes':[code]},400),env,'token-only');
+  assert.equal(result.status,503);assert.equal(result.body.code,'TURNSTILE_SECRET_INVALID');
+  assert.deepEqual(result.body.verificationErrors,[code]);assert.equal(result.body.verificationStatus,400);
+  assert.doesNotMatch(JSON.stringify(result),/test-only|token-only/);
+ }
+});
+test('HTTP 400 invalid token is verification failure, not network error',async()=>{
+ const result=await verifyTurnstile(async()=>res({success:false,'error-codes':['invalid-input-response']},400),env,'token-only');
+ assert.equal(result.status,403);assert.equal(result.body.code,'TURNSTILE_VERIFICATION_FAILED');
+});
+test('outage, invalid JSON and timeout handled without leaking bodies',async()=>{
+ for(const fetcher of [async()=>res({success:false,'error-codes':['internal-error']},503),async()=>new Response('private upstream text',{status:502}),async()=>{throw new Error('private exception');}]) {
+  const result=await verifyTurnstile(fetcher,env,'token-only');assert.equal(result.status,503);
+  assert.doesNotMatch(JSON.stringify(result),/private|test-only|token-only/);
+ }
+});
+test('non-2xx success and unexpected error-codes are never trusted',async()=>{
+ const result=await verifyTurnstile(async()=>res({success:true,hostname:env.TURNSTILE_HOSTNAME,action:'identify','error-codes':['private-message']},400),env,'token-only');
+ assert.equal(result.status,403);assert.deepEqual(result.body.verificationErrors,[]);
 });

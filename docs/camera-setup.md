@@ -129,3 +129,32 @@ npm run check
 PythonのPlaywrightとChromiumがある環境では、リポジトリ直下で
 `python tests/browser.py` を実行します。Chromiumパスは `CHROMIUM_PATH` で変更できます。
 ブラウザテストは外部APIとTurnstileをモックします。認識精度や本番認証は検証しません。
+
+## プレビューでTurnstile成功後にAPIが失敗する場合
+
+プレビューと本番PagesのOriginは、どちらも
+`https://ntakumi1224-beep.github.io` です。`ALLOWED_ORIGIN` には
+`/miku-prize-collector-preview/` を付けないでください。
+`TURNSTILE_HOSTNAME` は `ntakumi1224-beep.github.io`（スキーム・パスなし）です。
+Site keyとWorkerの `TURNSTILE_SECRET_KEY` は同じTurnstileウィジェットの組である必要があります。
+
+ブラウザ上の「成功しました」はトークン取得の成功です。
+WorkerによるSiteverify検証の成功とは別です。
+以前のWorkerはSiteverifyのHTTPエラーをすべて「接続できませんでした」と表示していました。
+修正版はJSONで検証を送信し、非2xxでも安全な `error-codes` を解析します。
+
+Workerを更新後、ブラウザの開発者ツール → Network → `identify` → Responseで
+次の `code` を確認できます。秘密の値やトークンを共有する必要はありません。
+
+| code | 確認すること |
+|---|---|
+| `TURNSTILE_SECRET_INVALID` | WorkerのSecretが同じウィジェットのSecret keyか。Site keyを誤登録していないか。前後の空白や引用符がないか。 |
+| `TURNSTILE_VERIFICATION_FAILED` | 新しく発行されたトークンで再試行。`verificationErrors` が `timeout-or-duplicate` なら期限切れ・再使用。 |
+| `TURNSTILE_CONTEXT_MISMATCH` | 許可ホスト名、Workerの `TURNSTILE_HOSTNAME`、画面側の `action: identify` が一致しているか。 |
+| `TURNSTILE_SERVICE_ERROR` | `verificationStatus` を確認。Turnstileの障害や非JSON応答を受けている可能性。 |
+| `TURNSTILE_NETWORK_ERROR` | WorkerからSiteverifyへの通信が失敗またはタイムアウト。 |
+
+このコード変更はフロントエンドの再公開では適用されません。
+作業ブランチの `worker/` ディレクトリで `npm ci` → `npm run deploy` を実行して
+Workerを更新します。登録済みのSecretは再デプロイで保持されます。
+`main`へのマージは不要です。APIエラーの修正後に実写真で接続を再確認してください。

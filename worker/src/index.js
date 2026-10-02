@@ -42,6 +42,39 @@ function base64(bytes) {
   for(let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
   return btoa(binary);
 }
+// Parse Siteverify error-codes even on non-2xx; expose only safe diagnostics.
+export async function verifyTurnstile(fetchUpstream, env, token, ip) {
+  let response;
+  try {
+    response = await fetchUpstream('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({secret:env.TURNSTILE_SECRET_KEY, response:token, ...(ip ? {remoteip:ip} : {})}),
+      signal:AbortSignal.timeout(10000)
+    });
+  } catch {
+    return {status:503, body:{error:'利用確認サービスとの通信に失敗しました。再試行してください。', code:'TURNSTILE_NETWORK_ERROR'}};
+  }
+  let challenge;
+  try { challenge = await response.json(); } catch {
+    return {status:503, body:{error:'利用確認サービスから正常な応答を受信できませんでした。', code:'TURNSTILE_SERVICE_ERROR', verificationStatus:response.status}};
+  }
+  const knownCodes = new Set(['missing-input-secret','invalid-input-secret','missing-input-response','invalid-input-response','bad-request','timeout-or-duplicate','internal-error']);
+  const codes = Array.isArray(challenge?.['error-codes']) ? challenge['error-codes'].filter(code => knownCodes.has(code)) : [];
+  const diagnostic = {verificationStatus:response.status, verificationErrors:codes};
+  if(codes.some(code => ['missing-input-secret','invalid-input-secret'].includes(code))) {
+    return {status:503, body:{error:'利用確認のサーバー設定に問題があります。管理者にお問い合わせください。', code:'TURNSTILE_SECRET_INVALID', ...diagnostic}};
+  }
+  if(response.status >= 500 || codes.includes('internal-error')) {
+    return {status:503, body:{error:'利用確認サービスが一時的に利用できません。再試行してください。', code:'TURNSTILE_SERVICE_ERROR', ...diagnostic}};
+  }
+  if(!response.ok || challenge?.success !== true) {
+    return {status:403, body:{error:'利用確認に失敗しました。再試行してください。', code:'TURNSTILE_VERIFICATION_FAILED', ...diagnostic}};
+  }
+  if(challenge.hostname !== env.TURNSTILE_HOSTNAME || challenge.action !== 'identify') {
+    return {status:403, body:{error:'利用確認のサイト設定が一致しません。管理者にお問い合わせください。', code:'TURNSTILE_CONTEXT_MISMATCH'}};
+  }
+  return null;
+}
 export function createHandler(fetchUpstream = fetch) {
   return async (request, env) => {
     const url = new URL(request.url);
@@ -66,12 +99,8 @@ export function createHandler(fetchUpstream = fetch) {
     const mime = imageType(bytes);
     if(!mime || mime !== image.type) return json({error:'JPEGまたはPNG画像を送信してください。'}, 400, origin);
     try {
-      const verification = await fetchUpstream('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
-        method:'POST', body:new URLSearchParams({secret:env.TURNSTILE_SECRET_KEY, response:token, remoteip:request.headers.get('CF-Connecting-IP') || ''}), signal:AbortSignal.timeout(10000)
-      });
-      if(!verification.ok) return json({error:'利用確認サービスに接続できませんでした。'}, 503, origin);
-      const challenge = await verification.json();
-      if(!challenge.success || challenge.hostname !== env.TURNSTILE_HOSTNAME || challenge.action !== 'identify') return json({error:'利用確認に失敗しました。再試行してください。'}, 403, origin);
+      const verificationError = await verifyTurnstile(fetchUpstream, env, token, request.headers.get('CF-Connecting-IP'));
+      if(verificationError) return json(verificationError.body, verificationError.status, origin);
       const ip = request.headers.get('CF-Connecting-IP');
       if(!ip) return json({error:'アクセス情報を確認できませんでした。'}, 403, origin);
       const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ip)))).map(b => b.toString(16).padStart(2,'0')).join('');
