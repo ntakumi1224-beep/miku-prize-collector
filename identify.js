@@ -94,7 +94,16 @@
       if(current !== revision) return;
       if(!response.ok) throw new Error(data.error || '検索できませんでした。時間を置いて再試行してください。');
       if(data.databaseUpdated !== DATABASE_META.database_updated) throw new Error('商品データの更新が必要です。オンラインで再読み込みしてください。');
-      renderCandidates(data.candidateIds); setStatus('検索が完了しました。候補を見比べてください。');
+      if(data.candidateIds?.length && typeof data.receipt !== 'string') throw new Error('検索結果を確定できません。再試行してください。');
+      renderCandidates(data.candidateIds);
+      if(data.candidateIds.length) {
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        if(current !== revision) return;
+        const confirmUrl = endpoint.href.replace(/\/identify$/, '/identify/confirm');
+        const confirmation = await fetch(confirmUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({receipt:data.receipt}),signal:controller.signal,credentials:'omit',cache:'no-store'});
+        if(!confirmation.ok) throw new Error('検索回数を確定できませんでした。再検索してください。');
+      }
+      setStatus(data.candidateIds.length ? '検索が完了しました。候補を見比べてください。' : '候補を絞れませんでした。この検索は日次回数に含まれません。');
     } catch(error) {
       if(current === revision) setStatus(error.name === 'AbortError' ? '検索がタイムアウトしました。再試行してください。' : error instanceof TypeError ? '通信できませんでした。ネット接続を確認し、再試行してください。' : error.message);
     } finally {

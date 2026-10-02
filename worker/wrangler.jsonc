@@ -6,7 +6,7 @@
     "ALLOWED_ORIGIN": "https://ntakumi1224-beep.github.io",
     "TURNSTILE_HOSTNAME": "ntakumi1224-beep.github.io",
     "OPENAI_MODEL": "gpt-4.1-mini",
-    "MAX_REQUESTS_PER_DAY": "5"
+    "MAX_REQUESTS_PER_DAY": "30"
   },
   "durable_objects": {
     "bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimiter", "script_name": "miku-prize-collector-identify" }]

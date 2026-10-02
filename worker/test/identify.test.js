@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createHandler,validateCandidates,RateLimiter,verifyTurnstile} from '../src/index.js';
 import catalog from '../src/catalog.json' with {type:'json'};
 const ids=catalog.items.slice(0,3).map(x=>x.id);
-const env={ALLOWED_ORIGIN:'https://ntakumi1224-beep.github.io',TURNSTILE_HOSTNAME:'ntakumi1224-beep.github.io',OPENAI_API_KEY:'test-only',TURNSTILE_SECRET_KEY:'test-only',RATE_LIMITER:{idFromName:x=>x,get:()=>({fetch:async()=>new Response(null,{status:200})})}};
+const env={ALLOWED_ORIGIN:'https://ntakumi1224-beep.github.io',TURNSTILE_HOSTNAME:'ntakumi1224-beep.github.io',OPENAI_API_KEY:'test-only',TURNSTILE_SECRET_KEY:'test-only',RATE_LIMITER:{idFromName:x=>x,get:()=>({fetch:async(url)=>res(new URL(url).pathname==='/admit'?{receipt:'11111111-1111-4111-8111-111111111111'}:{},200)})}};
 function req({origin=env.ALLOWED_ORIGIN,method='POST',image=new Blob([new Uint8Array([255,216,255,224])],{type:'image/jpeg'}),token='test-token'}={}){
  const form=new FormData();form.append('image',image,'photo.jpg');form.append('turnstileToken',token);
  return new Request('https://worker.example/api/identify',{method,headers:{Origin:origin,'CF-Connecting-IP':'192.0.2.1'},...(method==='POST'?{body:form}:{})});
@@ -19,7 +19,7 @@ test('339 unique products, 3–5 IDs or abstention; invalid IDs/duplicates/count
 });
 test('real request builds image/catalog payload and returns ranked IDs/version',async()=>{
  const r=await createHandler(upstream({inspect:body=>{assert.match(body.messages[0].content,/color variants/);assert.match(body.messages[0].content,/SEGA-001/);assert.match(body.messages[1].content[1].image_url.url,/^data:image\/jpeg;base64,/);assert.equal(body.response_format.json_schema.strict,true);}}))(req(),env);
- assert.equal(r.status,200);assert.equal(r.headers.get('Access-Control-Allow-Origin'),env.ALLOWED_ORIGIN);assert.equal(r.headers.get('Cache-Control'),'no-store');assert.deepEqual(await r.json(),{candidateIds:ids,databaseUpdated:catalog.database_updated});
+ assert.equal(r.status,200);assert.equal(r.headers.get('Access-Control-Allow-Origin'),env.ALLOWED_ORIGIN);assert.equal(r.headers.get('Cache-Control'),'no-store');assert.deepEqual(await r.json(),{candidateIds:ids,databaseUpdated:catalog.database_updated,receipt:'11111111-1111-4111-8111-111111111111'});
 });
 test('abstention stays empty',async()=>{assert.deepEqual((await (await createHandler(upstream({candidates:[]}))(req(),env)).json()).candidateIds,[]);});
 test('origin rejected before upstream',async()=>{const r=await createHandler(()=>assert.fail())(req({origin:'https://attacker.example'}),env);assert.equal(r.status,403);assert.equal(r.headers.get('Access-Control-Allow-Origin'),null);});
@@ -38,64 +38,80 @@ function limiterFixture(instant = '2026-10-03T12:00:00Z') {
   get:async key=>data.get(key), put:async(key,value)=>data.set(key,value),
   transaction:fn=>{const result=queue.then(()=>fn(storage));queue=result.catch(()=>{});return result;},
   getAlarm:async()=>alarm, setAlarm:async value=>{alarm=value;},
-  list:async()=>new Map(data), delete:async keys=>keys.forEach(key=>data.delete(key))
+  list:async()=>new Map(data), delete:async keys=>(Array.isArray(keys)?keys:[keys]).forEach(key=>data.delete(key))
  };
  const limiter = new RateLimiter({storage}, {}, ()=>now);
  return {data, limiter, setTime:value=>{now=Date.parse(value);},
   advance:ms=>{now+=ms;},
+  settle:(action,key,receipt)=>limiter.fetch(new Request('https://limiter/'+action,{method:'POST',body:JSON.stringify({key,receipt})})),
   admit:(key, dailyLimit=5)=>limiter.fetch(new Request('https://limiter/admit', {method:'POST',body:JSON.stringify({key,dailyLimit})}))};
 }
-test('five daily requests per IP; a different IP has an independent allowance',async()=>{
+async function success(f,key,limit=5) {
+ const response=await f.admit(key,limit);
+ if(response.status===200) {const {receipt}=await response.json();assert.equal((await f.settle('ready',key,receipt)).status,200);assert.equal((await f.settle('confirm',key,receipt)).status,200);}
+ return response;
+}
+test('five displayed successes per IP; different IP has independent allowance',async()=>{
  const f=limiterFixture();
- for(let i=0;i<5;i++) {assert.equal((await f.admit('a')).status,200);f.advance(60000);}
- assert.equal((await f.admit('a')).status,429);
- for(let i=0;i<5;i++) {assert.equal((await f.admit('b')).status,200);f.advance(60000);}
- assert.equal((await f.admit('b')).status,429);
+ for(const key of ['a','b']) {
+  for(let i=0;i<5;i++){assert.equal((await success(f,key)).status,200);f.advance(60000);}
+  assert.equal((await f.admit(key)).status,429);
+ }
 });
-test('minute throttling remains and denied requests do not consume daily allowance',async()=>{
+test('released failures do not charge daily quota but still hit minute throttle',async()=>{
  const f=limiterFixture();
- for(let i=0;i<3;i++) assert.equal((await f.admit('a')).status,200);
- assert.equal((await f.admit('a')).status,429);
- f.advance(60000);
- for(let i=0;i<2;i++) assert.equal((await f.admit('a')).status,200);
+ for(let i=0;i<3;i++){const receipt=(await(await f.admit('a')).json()).receipt;assert.equal((await f.settle('release','a',receipt)).status,200);}
+ assert.equal((await f.admit('a')).status,429);f.advance(60000);
+ for(let i=0;i<5;i++){assert.equal((await success(f,'a')).status,200);f.advance(60000);}
  assert.equal((await f.admit('a')).status,429);
 });
-test('daily allowance resets at JST midnight, not UTC midnight',async()=>{
+test('quota resets at JST midnight, not UTC midnight',async()=>{
  const f=limiterFixture('2026-10-03T14:54:00Z');
- for(let i=0;i<5;i++) {assert.equal((await f.admit('a')).status,200);f.advance(60000);}
- assert.equal((await f.admit('a')).status,429); // 23:59 JST
- f.setTime('2026-10-03T15:00:00Z'); // 00:00 JST
- for(let i=0;i<5;i++) {assert.equal((await f.admit('a')).status,200);f.advance(60000);}
+ for(let i=0;i<5;i++){assert.equal((await success(f,'a')).status,200);f.advance(60000);}
  assert.equal((await f.admit('a')).status,429);
- f.setTime('2026-10-04T00:00:00Z'); // 09:00 JST
- assert.equal((await f.admit('a')).status,429);
+ f.setTime('2026-10-03T15:00:00Z');
+ for(let i=0;i<5;i++){assert.equal((await success(f,'a')).status,200);f.advance(60000);}
+ f.setTime('2026-10-04T00:00:00Z');assert.equal((await f.admit('a')).status,429);
 });
-test('concurrent requests cannot exceed minute or daily allowances',async()=>{
- const f=limiterFixture();
- const batch=()=>Promise.all(Array.from({length:20},()=>f.admit('a')));
- assert.equal((await batch()).filter(r=>r.status===200).length,3);
- f.advance(60000);
+test('concurrent reservations cannot bypass minute or daily cap',async()=>{
+ const f=limiterFixture(), batch=()=>Promise.all(Array.from({length:20},()=>f.admit('a')));
+ assert.equal((await batch()).filter(r=>r.status===200).length,3);f.advance(60000);
  assert.equal((await batch()).filter(r=>r.status===200).length,2);
 });
-test('legacy global cap is retired; current minute counter remains effective',async()=>{
- const f=limiterFixture();const now=Date.parse('2026-10-03T12:00:00Z');
- f.data.set('day:'+Math.floor(now/86400000),5);
- f.data.set('ip:a:'+Math.floor(now/60000),3);
- assert.equal((await f.admit('a')).status,429);
- assert.equal((await f.admit('b')).status,200);
- f.advance(60000);assert.equal((await f.admit('a')).status,200);
+test('confirmation is idempotent, IP-bound and requires validated candidates',async()=>{
+ const f=limiterFixture(), receipt=(await(await f.admit('a',1)).json()).receipt;
+ assert.equal((await f.settle('confirm','a',receipt)).status,409);
+ await f.settle('ready','a',receipt);
+ assert.equal((await f.settle('confirm','b',receipt)).status,409);
+ assert.equal((await f.settle('confirm','a',receipt)).status,200);
+ assert.equal((await f.settle('confirm','a',receipt)).status,200);
+ f.advance(60000);assert.equal((await f.admit('a',1)).status,429);
 });
-test('cleanup removes expired counters, preserving the current JST daily allowance',async()=>{
- const f=limiterFixture('2026-10-03T15:00:00Z');
- await f.admit('a');
- const now=Date.parse('2026-10-03T15:00:00Z'), day=Math.floor((now+9*3600000)/86400000);
- f.data.set('ip-day-jst:old:'+String(day-1),5);
- f.data.set('day:'+String(Math.floor(now/86400000)-1),5);
- f.data.set('unrelated-metadata','keep');
- f.advance(60000);await f.limiter.alarm();
- assert.equal(f.data.get('ip-day-jst:a:'+day),1);
+test('missing confirmation expires without charging and cannot be replayed',async()=>{
+ const f=limiterFixture(), receipt=(await(await f.admit('a',1)).json()).receipt;
+ await f.settle('ready','a',receipt);f.advance(120000);
+ assert.equal((await f.settle('confirm','a',receipt)).status,409);
+ assert.equal((await success(f,'a',1)).status,200);
+});
+test('reservations from before JST midnight cannot charge the new day',async()=>{
+ const f=limiterFixture('2026-10-03T14:59:59Z'), receipt=(await(await f.admit('a')).json()).receipt;
+ await f.settle('ready','a',receipt);f.advance(1000);
+ assert.equal((await f.settle('confirm','a',receipt)).status,409);
+ assert.equal((await success(f,'a')).status,200);
+});
+test('legacy attempts are not charged as successes; existing minute throttle survives',async()=>{
+ const f=limiterFixture(), now=Date.parse('2026-10-03T12:00:00Z');
+ f.data.set('ip-day-jst:a:'+Math.floor((now+9*3600000)/86400000),5);
+ f.data.set('ip:a:'+Math.floor(now/60000),3);
+ assert.equal((await f.admit('a')).status,429);f.advance(60000);assert.equal((await success(f,'a')).status,200);
+});
+test('alarm cleans expired reservations but preserves committed usage and receipts',async()=>{
+ const f=limiterFixture();await success(f,'a');await f.admit('b');f.data.set('unrelated-metadata','keep');
+ f.advance(120000);await f.limiter.alarm();
  assert.equal(f.data.get('unrelated-metadata'),'keep');
- assert.ok(!f.data.has('ip-day-jst:old:'+String(day-1)));
+ assert.equal([...f.data.values()].filter(v=>v?.confirmed).length,1);
+ assert.equal([...f.data.values()].filter(v=>v?.used===1).length,1);
+ assert.ok([...f.data.values()].filter(v=>v?.pending).every(v=>Object.keys(v.pending).length===0));
 });
 
 test('Siteverify sends explicit JSON with secret, token and IP',async()=>{
@@ -167,4 +183,38 @@ test('unexpected pre-OpenAI failure has its own code, not a provider error',asyn
  const e={...env,RATE_LIMITER:{idFromName:()=>{throw new Error(privateText);}}};
  const r=await createHandler(upstream())(req(),e);
  const data=await r.json();assert.equal(data.code,'IDENTIFY_INTERNAL_ERROR');assert.doesNotMatch(JSON.stringify(data),/sensitive-provider-body/);
+});
+
+test('real limiter releases quota on each OpenAI diagnostic failure and abstention',async()=>{
+ for(const [label,reply,code] of [...diagnosticCases,['empty',()=>res({choices:[{message:{content:'{"candidateIds":[]}'}}]})]]) {
+  const f=limiterFixture();
+  const e={...env,MAX_REQUESTS_PER_DAY:'30',RATE_LIMITER:{idFromName:x=>x,get:()=>({fetch:(url,options)=>f.limiter.fetch(new Request(url,options))})}};
+  const handler=createHandler(async(url)=>url.includes('siteverify') ? res({success:true,hostname:env.TURNSTILE_HOSTNAME,action:'identify'}) : reply());
+  const response=await handler(req(),e);
+  assert.equal(response.status,label==='empty'?200:502);
+  if(code) assert.equal((await response.json()).code,code);
+  const buckets=[...f.data.values()].filter(v=>v?.pending);
+  assert.ok(buckets.every(v=>v.used===0 && Object.keys(v.pending).length===0));
+ }
+});
+test('Turnstile failure never reserves or consumes quota',async()=>{
+ const f=limiterFixture();
+ const e={...env,RATE_LIMITER:{idFromName:x=>x,get:()=>({fetch:(url,options)=>f.limiter.fetch(new Request(url,options))})}};
+ await createHandler(upstream({challenge:{success:false}}))(req(),e);
+ assert.equal(f.data.size,0);
+});
+test('API returns receipt without charging; display confirmation charges exactly once',async()=>{
+ const f=limiterFixture();
+ const e={...env,MAX_REQUESTS_PER_DAY:'30',RATE_LIMITER:{idFromName:x=>x,get:()=>({fetch:(url,options)=>f.limiter.fetch(new Request(url,options))})}};
+ const handler=createHandler(upstream());const response=await handler(req(),e);assert.equal(response.status,200,await response.clone().text());
+ const {receipt}=await response.json();assert.equal([...f.data.values()].filter(v=>v?.pending)[0].used,0);
+ const confirm=(ip='192.0.2.1')=>new Request('https://worker.example/api/identify/confirm',{method:'POST',headers:{Origin:env.ALLOWED_ORIGIN,'CF-Connecting-IP':ip,'Content-Type':'application/json'},body:JSON.stringify({receipt})});
+ assert.equal((await handler(confirm('192.0.2.2'),e)).status,409);
+ for(let i=0;i<2;i++)assert.deepEqual(await(await handler(confirm(),e)).json(),{confirmed:true});
+ assert.equal([...f.data.values()].filter(v=>v?.pending)[0].used,1);
+});
+test('development daily limit allows 30 successes then blocks 31st',async()=>{
+ const f=limiterFixture();
+ for(let i=0;i<30;i++){assert.equal((await success(f,'a',30)).status,200);f.advance(60000);}
+ assert.equal((await f.admit('a',30)).status,429);
 });

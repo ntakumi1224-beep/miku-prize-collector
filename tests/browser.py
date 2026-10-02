@@ -33,19 +33,23 @@ async def main():
   await context.route('**/config.js',lambda route:route.fulfill(content_type='application/javascript',body=PUBLIC_CONFIG))
   challenge="""window.turnstile={render:(selector,options)=>{window.testSiteKey=options.sitekey;window.testChallenge=()=>options.callback('test-token');window.testChallenge();return 1},reset:()=>window.testChallenge()};window.mpcTurnstileReady();"""
   await context.route('https://challenges.cloudflare.com/**',lambda route:route.fulfill(content_type='application/javascript',body=challenge))
-  mode={'value':'ok'}; sent=[]
+  mode={'value':'ok'}; sent=[]; confirmations=[]
   async def api(route):
    if route.request.method=='OPTIONS':
     await route.fulfill(status=204,headers={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'POST','Access-Control-Allow-Headers':'Content-Type'});return
+   if route.request.url.endswith('/confirm'):
+    assert await page.locator('.candidate').count() in [3,5]
+    confirmations.append(route.request.post_data)
+    await route.fulfill(status=200,content_type='application/json',headers={'Access-Control-Allow-Origin':'*'},body='{"confirmed":true}');return
    sent.append(route.request.post_data_buffer)
-   data={'candidateIds':IDS,'databaseUpdated':CATALOG['database_updated']};status=200
+   data={'candidateIds':IDS,'databaseUpdated':CATALOG['database_updated'],'receipt':'11111111-1111-4111-8111-111111111111'};status=200
    if mode['value']=='five':data['candidateIds']=[x['id'] for x in CATALOG['items'][:5]]
    if mode['value']=='empty':data['candidateIds']=[]
    if mode['value']=='invalid':data['candidateIds']=['invented',*IDS[:2]]
    if mode['value']=='limit':status=429;data={'error':'検索回数の上限に達しました。'}
    if mode['value']=='network':await route.abort();return
    await route.fulfill(status=status,content_type='application/json',headers={'Access-Control-Allow-Origin':'*'},body=json.dumps(data))
-  await context.route(API_URL,api)
+  await context.route(API_URL+'**',api)
   page=await context.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
   await page.goto(BASE);await page.wait_for_function('ITEMS.length===339')
   await page.evaluate('navigator.serviceWorker.ready');await page.wait_for_function('!!navigator.serviceWorker.controller')
@@ -58,16 +62,21 @@ async def main():
    assert await page.locator('.identifyWarning').inner_text()=='検索結果は参考候補です。よく見比べて確認してください。'
    card=await page.locator('.candidate').first.inner_text()
    for value in [IDS[0],CATALOG['items'][0]['maker'],CATALOG['items'][0]['name'],'登場年月','外観・衣装']:assert value in card
+   await page.wait_for_function('document.getElementById("identifyStatus").textContent.includes("検索が完了")')
    await page.locator('.candidate').first.click();assert await page.locator('#sheet').get_attribute('class')=='sheet open'
    await page.evaluate('closeSheet()')
+  assert len(confirmations)==2
   assert len(sent)==2 and all(b'image/jpeg' in body and b'turnstileToken' in body for body in sent)
   for value,text in [('empty','候補を絞れません'),('invalid','商品データの更新'),('limit','上限'),('network','通信できませんでした')]:
    mode['value']=value;await page.locator('#identifyButton').click()
    target='#identifyResult' if value=='empty' else '#identifyStatus'
    await page.wait_for_function('(args)=>document.querySelector(args[0]).textContent.includes(args[1])',arg=[target,text])
    await page.wait_for_function('!document.getElementById("identifyButton").disabled')
+  assert len(confirmations)==2 # empty/error results must not confirm usage
   mode['value']='five';await page.locator('#identifyButton').click()
   await page.wait_for_function('document.querySelectorAll(".candidate").length===5')
+  await page.wait_for_function('document.getElementById("identifyStatus").textContent.includes("検索が完了")')
+  assert len(confirmations)==3
   # Existing external search links and collection filters.
   await page.evaluate('() => {window.externalLinks=[];window.open=(url)=>{externalLinks.push(url);return {}};}')
   await page.evaluate('quickExternal("初音ミク", "images");quickExternal("初音ミク", "mercari");quickExternal("初音ミク", "google")')
