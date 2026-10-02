@@ -1,0 +1,16 @@
+{
+  "name": "miku-prize-collector-identify",
+  "main": "src/index.js",
+  "compatibility_date": "2025-09-01",
+  "vars": {
+    "ALLOWED_ORIGIN": "https://ntakumi1224-beep.github.io",
+    "TURNSTILE_HOSTNAME": "ntakumi1224-beep.github.io",
+    "OPENAI_MODEL": "gpt-4.1-mini",
+    "MAX_REQUESTS_PER_DAY": "100"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimiter" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RateLimiter"] }],
+  "observability": { "enabled": false }
+}

@@ -396,18 +396,6 @@ function quickExternal(raw,type){
    a.remove();
  }
 }
-document.getElementById('photo').addEventListener('change',e=>{
- const f=e.target.files[0]; if(!f)return;
- const im=document.getElementById('preview');im.src=URL.createObjectURL(f);im.style.display='block';
- document.getElementById('identifyResult').innerHTML='';
-});
-function demoIdentify(){
- const p=document.getElementById('photo').files[0];
- if(!p){alert('写真を選択してください');return;}
- document.getElementById('identifyResult').innerHTML=`
- <div class="market"><h3>カメラ検索は次段階で接続します</h3>
- <div class="notice">完成版では写真→候補商品→「所持済みにしますか？」の確認→1タップ登録、という流れにします。現プロトタイプではUI確認用です。</div></div>`;
-}
 function exportState(){
  const blob=new Blob([JSON.stringify({owned:[...owned],wanted:[...wanted],quantities,ownedAt},null,2)],{type:'application/json'});
  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='miku_collection_state.json';a.click();
