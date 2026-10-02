@@ -9,7 +9,7 @@
     "MAX_REQUESTS_PER_DAY": "5"
   },
   "durable_objects": {
-    "bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimiter" }]
+    "bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimiter", "script_name": "miku-prize-collector-identify" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RateLimiter"] }],
   "observability": { "enabled": false }

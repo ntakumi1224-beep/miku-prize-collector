@@ -105,7 +105,7 @@ export function createHandler(fetchUpstream = fetch) {
       if(!ip) return json({error:'アクセス情報を確認できませんでした。'}, 403, origin);
       const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ip)))).map(b => b.toString(16).padStart(2,'0')).join('');
       const limiter = env.RATE_LIMITER.get(env.RATE_LIMITER.idFromName('identify'));
-      const admission = await limiter.fetch('https://limiter/admit', {method:'POST', body:JSON.stringify({key:hash, dailyLimit:Number(env.MAX_REQUESTS_PER_DAY) || 100})});
+      const admission = await limiter.fetch('https://limiter/admit', {method:'POST', body:JSON.stringify({key:hash, dailyLimit:Number(env.MAX_REQUESTS_PER_DAY) || 5})});
       if(admission.status !== 200) return json({error:'検索回数の上限に達しました。時間を置いて再試行してください。'}, 429, origin);
       const ai = await fetchUpstream('https://api.openai.com/v1/chat/completions', {
         method:'POST', headers:{'Content-Type':'application/json', 'Authorization':`Bearer ${env.OPENAI_API_KEY}`},
@@ -128,16 +128,21 @@ export function createHandler(fetchUpstream = fetch) {
 }
 export default {fetch:createHandler()};
 
-// A single Durable Object enforces atomic limits across Worker instances.
+const JST_OFFSET = 9 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Keep the existing object identity and minute keys; daily keys are per IP/JST.
 export class RateLimiter {
-  constructor(state) { this.state = state; }
+  constructor(state, env, clock = Date.now) { this.state = state; this.clock = clock; }
   async fetch(request) {
     const {key, dailyLimit} = await request.json();
-    const now = Date.now(), minute = Math.floor(now / 60000), day = Math.floor(now / 86400000);
+    const limit = Number.isFinite(dailyLimit) ? Math.max(1, Math.min(1000, Math.floor(dailyLimit))) : 5;
+    const now = this.clock(), minute = Math.floor(now / 60000);
+    const day = Math.floor((now + JST_OFFSET) / DAY_MS);
     const allowed = await this.state.storage.transaction(async tx => {
-      const counters = [ [`ip:${key}:${minute}`,3], [`day:${day}`,Math.max(1, Math.min(1000, dailyLimit))] ];
+      const counters = [ [`ip:${key}:${minute}`,3], [`ip-day-jst:${key}:${day}`,limit] ];
       const values = await Promise.all(counters.map(([id]) => tx.get(id)));
-      if(counters.some(([,limit],i) => (values[i] || 0) >= limit)) return false;
+      if(counters.some(([,max],i) => (values[i] || 0) >= max)) return false;
       await Promise.all(counters.map(([id],i) => tx.put(id,(values[i] || 0)+1)));
       return true;
     });
@@ -145,10 +150,18 @@ export class RateLimiter {
     return new Response(null,{status:allowed ? 200 : 429});
   }
   async alarm() {
-    const now = Date.now(), minute = Math.floor(now / 60000), day = Math.floor(now / 86400000);
+    const now = this.clock(), minute = Math.floor(now / 60000);
+    const jstDay = Math.floor((now + JST_OFFSET) / DAY_MS);
+    const utcDay = Math.floor(now / DAY_MS);
     const keys = await this.state.storage.list();
-    const expired = [...keys.keys()].filter(key => key.startsWith('ip:') ? Number(key.split(':').at(-1)) < minute : Number(key.split(':').at(-1)) < day);
-    // Storage.delete accepts at most 128 keys per call.
+    const expired = [...keys.keys()].filter(key => {
+      const period = Number(key.split(':').at(-1));
+      if(key.startsWith('ip:')) return period < minute;
+      if(key.startsWith('ip-day-jst:')) return period < jstDay;
+      // Retire old global UTC counters without assigning them to arbitrary IPs.
+      if(key.startsWith('day:')) return period < utcDay;
+      return false;
+    });
     for(let i = 0; i < expired.length; i += 128) await this.state.storage.delete(expired.slice(i,i+128));
     if(keys.size > expired.length) await this.state.storage.setAlarm(now + 3600000);
   }
