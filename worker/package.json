@@ -1,0 +1,15 @@
+{
+  "name": "miku-prize-collector-identify",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "catalog": "node scripts/build-catalog.mjs",
+    "dev": "npm run catalog && wrangler dev",
+    "deploy": "npm run catalog && wrangler deploy",
+    "check": "npm run catalog && wrangler deploy --dry-run",
+    "test": "npm run catalog && node --test"
+  },
+  "devDependencies": {
+    "wrangler": "4.146.0"
+  }
+}
