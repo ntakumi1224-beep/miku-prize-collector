@@ -65,12 +65,22 @@
       <div class="identifyBox">
         <div style="font-size:42px">📸</div>
         <div style="font-weight:800;margin-top:8px">フィギュアを撮影・選択</div>
-        <div class="notice">プロトタイプでは写真プレビューまで実装。次段階でChatGPTカメラ検索と339件マスターを接続します。</div>
-        <input id="photo" type="file" accept="image/*" capture="environment" style="margin-top:14px;max-width:100%">
-        <img id="preview" class="preview">
-        <button type="button" class="cameraSearchBtn" onclick="demoIdentify()">この写真から検索</button>
+        <div class="notice">撮影または写真選択後、プレビューを確認してAI検索してください。</div>
+        <div class="actions">
+          <label class="btn photoInput">カメラで撮影<input id="cameraPhoto" type="file" accept="image/*" capture="environment"></label>
+          <label class="btn photoInput">カメラロールから選択<input id="libraryPhoto" type="file" accept="image/*"></label>
+        </div>
+        <div id="identifyStatus" class="notice" role="status" aria-live="polite"></div>
+        <img id="preview" class="preview" alt="検索する画像のプレビュー">
+        <div class="notice">AI検索時に画像を認識API（OpenAI）へ送信します。人物や個人情報が写っていないことをご確認ください。画像はこのアプリのサーバーには保存しません。</div>
+        <div id="turnstileWidget"></div>
+        <button id="identifyButton" type="button" class="cameraSearchBtn" disabled>AI検索</button>
+        <div class="notice">AIは候補を絞る補助役です。類似衣装・色違い・別バージョン・限定仕様は、ご自身で確認してください。AI検索にはネット接続が必要です。</div>
       </div>
-      <div id="identifyResult" style="margin-top:12px"></div>
+      <div id="identifyResults" hidden>
+        <p class="identifyWarning"><strong>検索結果は参考候補です。よく見比べて確認してください。</strong></p>
+        <div id="identifyResult" style="margin-top:12px" aria-live="polite"></div>
+      </div>
     </section>
 
     <section id="history" class="screen">
@@ -168,6 +178,8 @@
   </div>
 </div>
 
+<script src="./config.js" defer></script>
 <script src="./app.js" defer></script>
+<script src="./identify.js" defer></script>
 </body>
 </html>
